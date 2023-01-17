@@ -1,0 +1,338 @@
+---
+title: "Access to Public Transit in Boston"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+```
+
+```{r, include=FALSE}
+# Setting working directory 
+setwd("~/Desktop/FinalProj")
+
+# Including libraries
+library(sf)
+library(dplyr)
+library(tmap)
+library(ggplot2)
+library(tidycensus)
+library(raster)
+library(MASS)
+library(leaflet)
+library(ggmap)
+library(ggspatial)
+library(ggsn)
+library(plotly)
+
+# enabling tmap interactive mode
+tmap_mode("view")
+
+## API keys not publicly exposed ##
+```
+
+```{r, include=FALSE}
+# -------Base maps---------
+
+# Boston neighborhoods
+neighborhoods <- st_read("Census2020_BG_Neighborhoods.shp")
+
+# Neighborhood geometries in NAD83
+neighborhoods_N83 <- st_transform(neighborhoods, st_crs(4269))
+
+# Mass municipalities polygons
+mass_poly <- st_read("TOWNSSURVEY_POLY.shp")
+
+# Filter by Boston 
+mass_poly_bos <- mass_poly %>% filter(TOWN==c("BOSTON"))
+
+# Crop view 
+mass_poly_bos_cropped <- st_crop(mass_poly_bos, xmin = 220391.7, xmax = 241871.9,
+                                    ymin = 894241, ymax = 909753.4)
+
+# Cropped version in NAD83
+mass_poly_bos_cropped_N83 <- st_transform(mass_poly_bos_cropped, crs=st_crs(4269))
+```
+
+```{r}
+# Stamen
+
+us <- c(left = -71.18, bottom = 42.3, right = -71.0, top = 42.39)
+boston_base <- get_stamenmap(us, zoom=14, maptype = 'terrain-background', source = 'stamen') 
+
+```
+
+```{r, include=FALSE}
+# -------MBTA data---------
+
+# Subway station locations
+t_sub_nodes <- st_read("MBTA_NODE.shp")
+# Subway station lines
+t_sub_lines <- st_read("MBTA_ARC.shp")
+
+# Bus stops
+t_bus_stops <- st_read("MBTABUSSTOPS_PT.shp")
+
+# Subway lines (note: this does not include the entire ARC namespace)
+t_sub_lines_GREEN <- t_sub_lines %>% filter(t_sub_lines$LINE=="GREEN")       
+t_sub_lines_ORANGE <- t_sub_lines %>% filter(t_sub_lines$LINE=="ORANGE") 
+t_sub_lines_RED <- t_sub_lines %>% filter(t_sub_lines$LINE=="RED") 
+t_sub_lines_SILVER <- t_sub_lines %>% filter(t_sub_lines$LINE=="SILVER") 
+t_sub_lines_BLUE <- t_sub_lines %>% filter(t_sub_lines$LINE=="BLUE") 
+
+```
+
+```{r, include=FALSE}
+## NAD83 / Massachusetts Mainland
+
+# Extracting shapefile geometries into a separate data frame
+t_sub_nodes_points <- as.data.frame(st_coordinates(st_geometry(t_sub_nodes)))
+t_bus_stops_points <- as.data.frame(st_coordinates(st_geometry(t_bus_stops)))
+
+t_sub_bus_points <- rbind(t_sub_nodes_points, t_bus_stops_points)
+
+## WG84
+
+# Conversion
+t_sub_nodes_W84 <- st_transform(t_sub_nodes, st_crs(4326))
+t_bus_stops_W84 <- st_transform(t_bus_stops, st_crs(4326))
+
+# Extracting shapefile geometries into a separate data frame
+t_sub_nodes_W84_points <- as.data.frame(st_coordinates(st_geometry(t_sub_nodes_W84)))
+t_bus_stops_W84_points <- as.data.frame(st_coordinates(st_geometry(t_bus_stops_W84)))
+
+t_sub_bus_W84_points <- rbind(t_sub_nodes_W84_points, t_bus_stops_W84_points)
+
+## NAD83
+
+# Conversion
+t_sub_nodes_N83 <- st_transform(t_sub_nodes, st_crs(4269))
+t_bus_stops_N83 <- st_transform(t_bus_stops, st_crs(4269))
+
+# Extracting shapefile geometries into a separate data frame
+t_sub_nodes_N83_points <- as.data.frame(st_coordinates(st_geometry(t_sub_nodes_N83)))
+t_bus_stops_N83_points <- as.data.frame(st_coordinates(st_geometry(t_bus_stops_N83)))
+
+t_sub_bus_N83_points <- rbind(t_sub_nodes_N83_points, t_bus_stops_N83_points)
+```
+
+```{r, include=FALSE}
+## Census data
+census_tract_data <- get_acs(geography = "tract",
+                      variables = c(total_pop = "B01003_001"),
+                      state = "MA",
+                      county = "Suffolk",
+                      geometry = TRUE,
+                      year = 2019)
+
+census_tract_data$"Population Estimate" <- census_tract_data$estimate
+class(census_tract_data$"Population Estimate")
+
+```
+
+```{r, include=FALSE}
+# -------Kernel Density Estimate (Rapid Transit)---------
+# with assistance from "Making Sense Remotely" 
+
+# 2D Kernel Density Estimate 
+kernel_density <- kde2d(t_sub_nodes_points$X, t_sub_nodes_points$Y, n = 100)
+contour(kernel_density)
+
+# Kernel density estimate raster data
+kde_raster = raster(kernel_density)
+raster_df = as.data.frame(kde_raster, xy=T)
+
+# Highest density profile (find maximum density within each group)
+highest_dens_prof <- aggregate(raster_df$layer, by=list(raster_df$x), FUN = max)
+
+# Gets the max density values from original data frame
+highest_dens_prof <- raster_df[match(highest_dens_prof$x, raster_df$layer), ]
+
+# Plot primitive
+#lines(highest_dens_prof$x, highest_dens_prof$y, col = "orange", lwd=2)
+```
+
+```{r, include=FALSE}
+# -------NAD83 Kernel Density Estimate (Rapid Transit)---------
+
+# 2D Kernel Density Estimate
+kernel_density_83 <- kde2d(t_sub_nodes_N83_points$X, t_sub_nodes_N83_points$Y, n = 100)
+contour(kernel_density_83)
+
+# Kernel density estimate raster data
+kde_raster_83 = raster(kernel_density_83)
+raster_df_83 = as.data.frame(kde_raster_83, xy=T)
+
+# Highest density profile (find maximum density within each group)
+highest_dens_prof_83 <- aggregate(raster_df_83$layer, by=list(raster_df_83$x), FUN = max)
+
+# Gets the max density values from original data frame
+highest_dens_prof_83 <- raster_df_83[match(highest_dens_prof_83$x, raster_df_83$layer), ]
+
+# Plot primitive
+#lines(highest_dens_prof_83$x, highest_dens_prof_83$y, col = "orange", lwd=2)
+```
+
+```{r, include=FALSE}
+## NAD83 length unit is meter
+## 0.25 vmiles is 804.672 meters
+## from https://safety.fhwa.dot.gov/ped_bike/ped_transit/ped_transguide/ch4.cfm#:~:text=A.,when%20accessing%20heavy%20rail%20services.
+
+t_sub_nodes_N83_buffer_0.25 <- st_buffer(t_sub_nodes_N83, 402.336)
+```
+
+
+```{r, include=FALSE}
+stations_per_neighborhood <- neighborhoods_N83 %>% 
+  mutate("Subway_Station_Count" = lengths(st_intersects(., t_sub_nodes_N83)))
+
+stations_per_neighborhood <- cbind(label = paste("Number of stations in ",
+                    stations_per_neighborhood$BlockGr202, 
+                    ": ", 
+                    stations_per_neighborhood$Subway_Station_Count,
+                    sep = ""), stations_per_neighborhood)
+stations_per_neighborhood %>% filter(stations_per_neighborhood$Subway_Station_Count==0)
+```
+
+Rapid Density {data-icon="fa-signal"}
+===================================== 
+
+### Station Density Map (MBTA Rapid Transit) 
+    
+```{r}
+# IN NAD83 MASS MAINLAND / NO NEIGHBORHOODS
+
+mass_poly_bos_cropped <- sf::st_cast(mass_poly_bos_cropped, "MULTIPOLYGON")
+
+T_dens_no_neighborhoods <- ggplot() +  
+  geom_sf(data=mass_poly_bos_cropped) +
+  stat_density_2d(data=t_sub_nodes_points, geom="polygon", aes(x=X, y=Y, fill = after_stat(1000000000*level))) +
+  scale_fill_viridis_c(alpha=0.3)+
+  xlim(226392, 241841) +
+  ylim(895241, 905753) +
+  geom_line(aes(x = highest_dens_prof$x, y = highest_dens_prof$y, color = "HDP"), linetype="dotted", 
+            size=1, labels = "Highest density profile") + 
+  geom_point(aes(x=236552, y=900671), colour="black") +
+  labs(x = "", y = "", colour = "Highest desnity profile", fill = "Station density values \n(NAD83 / Massachusetts \nMainland)") +
+  scale_color_manual(values=c("HDP"="#FFA000")) + 
+  north(mass_poly_bos_cropped, location = "bottomleft", symbol = 3, anchor = c(x=225479, y=895641), scale=0.15) +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5), 
+        legend.title=element_text(size=9),
+        plot.caption = element_text(hjust = 0),
+        plot.subtitle = element_text(hjust = 0.5, size = 8, color = "darkgray")) + annotate(
+   geom = "segment", x = 233400, y = 902200, xend = 236552, yend = 900671) + 
+   annotate(geom = "text", x = 232892, y = 903000, label = "Downtown", size = 3) +
+   annotate(geom = "text", x = 232892, y = 902500, label = "Boston", size = 3) +
+   annotation_scale()
+```
+
+```{r}
+ggplotly(T_dens_no_neighborhoods) %>% 
+  layout(xaxis = list(autorange = TRUE),
+         yaxis = list(autorange = TRUE))
+```
+
+Combined Density {data-icon="fa-signal"}
+===================================== 
+
+### Station Density Map (MBTA Buses and Rapid Transit)
+    
+```{r}
+T_dens_BUS_no_neighborhoods <- ggplot() +  
+  geom_sf(data=mass_poly_bos_cropped) +
+  stat_density_2d(data=t_sub_bus_points, geom="polygon", aes(x=X, y=Y, fill = after_stat(1000000000*level))) +
+  scale_fill_viridis_c(alpha=0.3, limits=c(5,16), na.value = NA) +
+  xlim(226392, 241841) +
+  ylim(895241, 905753) +
+  labs(x = "", y = "", fill = "Station density values \n(NAD83 / Massachusetts \nMainland)") +
+  north(mass_poly_bos_cropped, location = "bottomleft", symbol = 3, anchor = c(x=225479, y=895641), scale=0.15) +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+        legend.title=element_text(size=9),
+        plot.caption = element_text(hjust = 0),
+        plot.subtitle = element_text(hjust = 0.5, size = 8, color = "darkgray")) +
+  annotation_scale()
+```
+
+```{r}
+ggplotly(T_dens_BUS_no_neighborhoods) %>% 
+  layout(xaxis = list(autorange = TRUE),
+         yaxis = list(autorange = TRUE))
+```
+
+
+HDP vs. Population {data-icon="fa-signal"}
+=====================================     
+
+### Station Density Profile vs. Tract Population (MBTA Rapid Transit)
+    
+```{r}
+## NO SMOOTHING HDP vs. pop
+
+T_dens_line_pop <- ggplot() +  
+  geom_sf(data=census_tract_data, aes(fill = census_tract_data$"Population Estimate")) +
+  scale_fill_viridis_c(alpha = 0.5) +
+  geom_line(aes(x = highest_dens_prof_83$x, y = highest_dens_prof_83$y, color = "HDP"), linetype="dotted",
+            size=1.4, labels = "Highest density profile") + 
+  labs(x = "", y = "", colour = "Highest desnity profile", fill = "Tract Population") +
+  scale_color_manual(values=c("HDP"="#FFA000")) + 
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(hjust = 0, size = 6),
+        plot.subtitle = element_text(hjust = 0.5, size = 8, color = "darkgray")) +
+  north(census_tract_data, symbol = 3, location = "topleft", anchor=c(x = -71.2177, y = 42.439),scale=0.13) +
+  xlim(-71.23, -70.95) +
+  ylim(42.28, 42.45) + annotation_scale(location="br") +
+   annotate(geom = "segment", x = -71.1, y = 42.375, xend = -71.0572, yend = 42.3557) + 
+   annotate(geom = "text", x = -71.109, y = 42.3875, label = "Downtown", size = 3) +
+   annotate(geom = "text", x = -71.109, y = 42.380, label = "Boston", size = 3) 
+```
+
+```{r}
+ggplotly(T_dens_line_pop) %>% 
+  layout(xaxis = list(autorange = TRUE),
+         yaxis = list(autorange = TRUE))
+```
+
+Buffer Map {data-icon="fa-signal"}
+===================================== 
+
+### Rapid Transit Stations Within Walking Distance
+
+```{r}
+# Generating a map of subway stations
+tm_shape(t_sub_nodes_N83_buffer_0.25) + tm_borders()
+
+```
+
+KDE Raster {data-icon="fa-signal"}
+===================================== 
+
+### Station Density Raster (MBTA Rapid Transit)
+
+```{r}
+
+raster_colors <- colorNumeric(c("#440154", "#414487", "#2a788e", "#22a884", "#7ad151", "#fde725"), values(kde_raster_83),
+  na.color = "transparent")
+
+m <- leaflet() %>% setView(lng = -71.0789, lat = 42.3501, zoom = 13)
+
+m %>% addProviderTiles(providers$CartoDB.Positron) %>%
+  addRasterImage(kde_raster_83, colors = raster_colors, opacity = 0.4) %>%
+  addLegend(pal = raster_colors, values = values(kde_raster_83),
+    title = "Station density \n(NAD83)")
+
+```
+
+Neighborhoods {data-icon="fa-signal"}
+===================================== 
+
+### Number of Subway Stations by Neighborhood
+
+
+```{r}
+tm_shape(stations_per_neighborhood) + tm_borders() + tm_fill("Subway_Station_Count", palette = "viridis", alpha=0.5)
+
+```
+
